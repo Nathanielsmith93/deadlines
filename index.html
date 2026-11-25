@@ -107,6 +107,18 @@
        border-radius:99px;overflow:hidden}
   .bar i{display:block;height:100%;background:var(--green)}
 
+  /* ---------- view tabs ---------- */
+  .tabs{display:flex;gap:24px;border-bottom:1px solid var(--line);margin-bottom:13px}
+  .tab{background:transparent;border:0;border-bottom:2px solid transparent;margin-bottom:-1px;
+    color:var(--dim);padding:2px 1px 8px;font-size:17px;cursor:pointer;
+    -webkit-tap-highlight-color:transparent}
+  .tab:hover{color:var(--fg)}
+  .tab.on{color:var(--fg);border-bottom-color:var(--fg);font-weight:700}
+  .tab .n{margin-left:6px;font-size:13px;font-weight:400;color:var(--dim);
+    font-variant-numeric:tabular-nums}
+  .tab.on .n{color:var(--fg)}
+  .exsum{color:var(--dim);font-size:15px;font-style:italic;margin:2px 0 4px}
+
   /* ---------- search + active chips ---------- */
   .search{width:100%;background:var(--card);border:1px solid var(--line);color:var(--fg);
     border-radius:4px;padding:10px 13px;font-size:16px;margin-bottom:11px}
@@ -197,6 +209,8 @@
     .opt{padding:10px 0;font-size:16px;min-height:44px}
     #pop .reset{padding:12px;font-size:15px;min-height:44px}
 
+    .tabs{gap:0}
+    .tab{flex:1;min-height:44px;padding:10px 4px;font-size:16px}
     .search{padding:12px 13px;min-height:44px}
     #chips button{padding:7px 13px;font-size:14px;min-height:36px}
 
@@ -253,6 +267,7 @@
       </details>
     </aside>
     <main>
+      <div class="tabs" id="tabs" role="tablist"></div>
       <input class="search" id="q" type="search" placeholder="Search title, course or notes&hellip;"
              autocapitalize="off" autocorrect="off" />
       <div id="chips"></div>
@@ -297,6 +312,12 @@ document.addEventListener("click", e => {
 });
 
 let DATA = null, course = "all", query = "";
+// Top-level view: every deadline, or only final exams. Remembered per device.
+const TAB_KEY = "deadlines.tab";
+let tab = "all";
+try { if(localStorage.getItem(TAB_KEY) === "finals") tab = "finals"; } catch(e){}
+const isFinal = d => d.final === true ||
+  (/\bfinal\b/i.test(d.title||"") && /\bexam/i.test((d.title||"") + " " + (d.type||"")));
 // Independent view toggles, all off = "everything not yet done".
 let V = {done:false, week:false, tbd:false, flagged:false, heavy:false};
 let nextDue = null;          // Date of the soonest open item, or null
@@ -541,10 +562,22 @@ function render(){
       c?` style="color:var(--${c})"`:""}>${v}</b><span>${l}</span></div>`).join("");
   nextDue = next ? next.dt : null;   // drives the 1s ticker
 
+  // ---------- view tabs ----------
+  const inTab = x => tab !== "finals" || isFinal(x);
+  document.getElementById("tabs").innerHTML =
+    [["all", "All deadlines", open.length], ["finals", "Finals", open.filter(isFinal).length]]
+    .map(([k,l,n]) => `<button class="tab${tab===k?" on":""}" type="button" role="tab"
+       aria-selected="${tab===k}" data-tab="${k}">${l}<span class="n">${n}</span></button>`).join("");
+  document.querySelectorAll("#tabs .tab").forEach(b => b.onclick = () => {
+    tab = b.dataset.tab;
+    try { localStorage.setItem(TAB_KEY, tab); } catch(e){}
+    render();
+  });
+
   // progress by course, weighted by % of final grade
   // ---------- sidebar: one row per course ----------
   const courses = [...new Set(all.map(x=>x.course).filter(Boolean))].sort();
-  const openOf = c => all.filter(x => !x.done && (c === "all" || x.course === c)).length;
+  const openOf = c => all.filter(x => !x.done && inTab(x) && (c === "all" || x.course === c)).length;
   document.getElementById("courses").innerHTML =
     `<button class="cbtn all ${course==="all"?"on":""}" data-c="all">All courses
        <span class="n">${openOf("all")}</span></button>` +
@@ -610,7 +643,7 @@ function render(){
   });
 
   // ---------- apply ----------
-  let items = all;
+  let items = all.filter(inTab);
   if(course !== "all") items = items.filter(x => x.course === course);
   if(!V.done) items = items.filter(x => !x.done);
   if(V.week) items = items.filter(inWeek);
@@ -624,17 +657,39 @@ function render(){
   }
 
   const list = document.getElementById("list");
-  if(!items.length){ list.innerHTML = `<div class="empty">Nothing matches these filters.</div>`; return; }
+  if(!items.length){
+    list.innerHTML = `<div class="empty">${tab === "finals" && !all.some(isFinal)
+      ? "No final exams on the dashboard yet." : "Nothing matches these filters."}</div>`;
+    return;
+  }
   let html = "", lastGroup = null;
+
+  // Finals tab: group upcoming exams by day (so double-exam days stand out) and summarise the exam period.
+  const fmtDay = dt => dt.toLocaleDateString(undefined, {weekday:'long', month:'long', day:'numeric'});
+  const exDay = it => tab === "finals" && !it.done && it.dt && it.dt >= now ? fmtDay(it.dt) : null;
+  const perDay = {};
+  for(const it of items){ const k = exDay(it); if(k) perDay[k] = (perDay[k] || 0) + 1; }
+  if(tab === "finals"){
+    const up = items.filter(exDay);
+    if(up.length){
+      const short = dt => dt.toLocaleDateString(undefined, {weekday:'short', month:'short', day:'numeric'});
+      const span = up.length > 1 ? `${short(up[0].dt)} – ${short(up[up.length-1].dt)}` : short(up[0].dt);
+      const busy = Object.values(perDay).filter(n => n > 1).length;
+      html += `<div class="exsum">${up.length} final${up.length > 1 ? "s" : ""} · ${span}${
+        busy ? ` · ${busy} day${busy > 1 ? "s" : ""} with more than one exam` : ""}</div>`;
+    }
+  }
   for(const it of items){
     if(it.bad){
       html += `<div class="item red"><div class="main"><div class="title">${esc(it.title||"Untitled")}</div>
                <div class="meta">Unreadable date: <code>${esc(String(it.due))}</code></div></div></div>`;
       continue;
     }
-    const [g, color] = it.done ? ["Done","green"]
-                     : it.noDate ? ["Date TBD — check CourseLink","gray"]
-                     : bucket(it.dt, now);
+    const [bg, color] = it.done ? ["Done","green"]
+                      : it.noDate ? ["Date TBD — check CourseLink","gray"]
+                      : bucket(it.dt, now);
+    const day = exDay(it);
+    const g = day ? day + (perDay[day] > 1 ? ` · ${perDay[day]} exams` : "") : bg;
     if(g !== lastGroup){ html += `<div class="group">${g}</div>`; lastGroup = g; }
     const left = (it.done || it.noDate) ? "" : `<b>${fmtLeft(it.dt-now)}</b>`;
     const when = it.noDate ? `<small>no date</small>` : `<small>${fmtDate(it.dt)}</small>`;
